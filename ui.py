@@ -5,4 +5,8 @@ from pipeline import get_items
 
 
 def show_dashboard():
-    st.table(pd.DataFrame(get_items()))
+    items = get_items()
+    metrics = st.columns(2)
+    metrics[0].metric("Items tracked", len(items))
+    metrics[1].metric("Total packs", sum(item["qty"] for item in items))
+    st.table(pd.DataFrame(items))
