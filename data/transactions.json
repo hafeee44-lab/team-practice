@@ -1,0 +1,18 @@
+[
+  {
+    "tx_id": "TX-0001",
+    "timestamp": "2026-10-06 01:10:00",
+    "item_id": "MED-001",
+    "action": "RESTOCK",
+    "qty_change": 20,
+    "reason": "Hackathon shipment test"
+  },
+  {
+    "tx_id": "TX-0002",
+    "timestamp": "2026-10-06 01:10:04",
+    "item_id": "SYSTEM",
+    "action": "CSV_IMPORT",
+    "qty_change": 2,
+    "reason": "CSV Import: 2 new, 0 updated"
+  }
+]

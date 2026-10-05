@@ -5,7 +5,8 @@
     "category": "Analgesic",
     "expiry": "2026-10-20",
     "qty": 120,
-    "min_qty": 50
+    "min_qty": 50,
+    "unit_price": 5.0
   },
   {
     "id": "MED-002",
@@ -13,7 +14,8 @@
     "category": "NSAID",
     "expiry": "2026-11-15",
     "qty": 30,
-    "min_qty": 40
+    "min_qty": 40,
+    "unit_price": 5.0
   },
   {
     "id": "MED-003",
@@ -21,7 +23,8 @@
     "category": "Antibiotic",
     "expiry": "2026-09-30",
     "qty": 45,
-    "min_qty": 30
+    "min_qty": 30,
+    "unit_price": 5.0
   },
   {
     "id": "MED-004",
@@ -29,7 +32,8 @@
     "category": "Antidiabetic",
     "expiry": "2027-12-01",
     "qty": 150,
-    "min_qty": 60
+    "min_qty": 60,
+    "unit_price": 5.0
   },
   {
     "id": "MED-005",
@@ -37,6 +41,25 @@
     "category": "Antihistamine",
     "expiry": "2026-10-05",
     "qty": 15,
-    "min_qty": 20
+    "min_qty": 20,
+    "unit_price": 5.0
+  },
+  {
+    "id": "MED-006",
+    "name": "Aspirin",
+    "category": "Analgesic",
+    "expiry": "2027-01-15",
+    "qty": 60,
+    "min_qty": 25,
+    "unit_price": 4.5
+  },
+  {
+    "id": "MED-007",
+    "name": "Vitamin C",
+    "category": "Supplement",
+    "expiry": "2026-12-31",
+    "qty": 100,
+    "min_qty": 50,
+    "unit_price": 3.0
   }
 ]
