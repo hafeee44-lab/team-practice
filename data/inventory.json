@@ -1,0 +1,42 @@
+[
+  {
+    "id": "MED-001",
+    "name": "Paracetamol",
+    "category": "Analgesic",
+    "expiry": "2026-10-20",
+    "qty": 120,
+    "min_qty": 50
+  },
+  {
+    "id": "MED-002",
+    "name": "Ibuprofen",
+    "category": "NSAID",
+    "expiry": "2026-11-15",
+    "qty": 30,
+    "min_qty": 40
+  },
+  {
+    "id": "MED-003",
+    "name": "Amoxicillin",
+    "category": "Antibiotic",
+    "expiry": "2026-09-30",
+    "qty": 45,
+    "min_qty": 30
+  },
+  {
+    "id": "MED-004",
+    "name": "Metformin",
+    "category": "Antidiabetic",
+    "expiry": "2027-12-01",
+    "qty": 150,
+    "min_qty": 60
+  },
+  {
+    "id": "MED-005",
+    "name": "Cetirizine",
+    "category": "Antihistamine",
+    "expiry": "2026-10-05",
+    "qty": 15,
+    "min_qty": 20
+  }
+]
