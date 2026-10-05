@@ -1,10 +1,13 @@
+import csv
+import io
 import json
 import os
-from datetime import date
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Union
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_FILE = os.path.join(DATA_DIR, "inventory.json")
+TRANSACTIONS_FILE = os.path.join(DATA_DIR, "transactions.json")
 
 DEFAULT_ITEMS = [
     {
@@ -14,6 +17,7 @@ DEFAULT_ITEMS = [
         "expiry": "2026-10-20",
         "qty": 120,
         "min_qty": 50,
+        "unit_price": 5.50,
     },
     {
         "id": "MED-002",
@@ -22,6 +26,7 @@ DEFAULT_ITEMS = [
         "expiry": "2026-11-15",
         "qty": 30,
         "min_qty": 40,
+        "unit_price": 8.00,
     },
     {
         "id": "MED-003",
@@ -30,6 +35,7 @@ DEFAULT_ITEMS = [
         "expiry": "2026-09-30",
         "qty": 45,
         "min_qty": 30,
+        "unit_price": 12.50,
     },
     {
         "id": "MED-004",
@@ -38,6 +44,7 @@ DEFAULT_ITEMS = [
         "expiry": "2027-12-01",
         "qty": 150,
         "min_qty": 60,
+        "unit_price": 6.25,
     },
     {
         "id": "MED-005",
@@ -46,9 +53,14 @@ DEFAULT_ITEMS = [
         "expiry": "2026-10-05",
         "qty": 15,
         "min_qty": 20,
+        "unit_price": 4.75,
     },
 ]
 
+
+# ==============================================================================
+# 1. CORE DATA PERSISTENCE & CRUD PIPELINE
+# ==============================================================================
 
 def load_inventory() -> List[Dict[str, Any]]:
     """Loads inventory from JSON storage or initializes default data."""
@@ -56,13 +68,18 @@ def load_inventory() -> List[Dict[str, Any]]:
         os.makedirs(DATA_DIR, exist_ok=True)
         with open(DATA_FILE, "w") as f:
             json.dump(DEFAULT_ITEMS, f, indent=2)
-        return DEFAULT_ITEMS.copy()
+        return [item.copy() for item in DEFAULT_ITEMS]
 
     try:
         with open(DATA_FILE, "r") as f:
-            return json.load(f)
+            items = json.load(f)
+            # Ensure unit_price exists for all items
+            for item in items:
+                if "unit_price" not in item:
+                    item["unit_price"] = 5.0
+            return items
     except (json.JSONDecodeError, OSError):
-        return DEFAULT_ITEMS.copy()
+        return [item.copy() for item in DEFAULT_ITEMS]
 
 
 def save_inventory(items: List[Dict[str, Any]]) -> None:
@@ -88,6 +105,7 @@ def get_items(
 
         min_qty = item_copy.get("min_qty", 30)
         item_copy["is_low_stock"] = item_copy["qty"] <= min_qty
+        item_copy["unit_price"] = float(item_copy.get("unit_price", 5.0))
 
         # Determine expiry alert status
         if days_left < 0:
@@ -122,8 +140,9 @@ def add_item(
     expiry: str,
     qty: int,
     min_qty: int = 30,
+    unit_price: float = 5.0,
 ) -> Dict[str, Any]:
-    """Adds a new medicine item to the inventory."""
+    """Adds a new medicine item to the inventory and logs transaction."""
     items = load_inventory()
     new_id = f"MED-{len(items) + 1:03d}"
     new_item = {
@@ -133,16 +152,20 @@ def add_item(
         "expiry": expiry.strip(),
         "qty": int(qty),
         "min_qty": int(min_qty),
+        "unit_price": float(unit_price),
     }
     items.append(new_item)
     save_inventory(items)
+    log_transaction(new_id, "CREATE", int(qty), f"Added new item {name}")
     return new_item
 
 
-def update_stock(item_id: str, delta_qty: int) -> bool:
-    """Updates the stock quantity of a specific item by delta_qty."""
+def update_stock(item_id: str, delta_qty: int, reason: str = "") -> bool:
+    """Updates the stock quantity of a specific item by delta_qty and logs transaction."""
     items = load_inventory()
     updated = False
+    action = "RESTOCK" if delta_qty > 0 else "DISPENSE"
+
     for item in items:
         if item["id"] == item_id:
             item["qty"] = max(0, item["qty"] + delta_qty)
@@ -151,21 +174,264 @@ def update_stock(item_id: str, delta_qty: int) -> bool:
 
     if updated:
         save_inventory(items)
+        log_transaction(item_id, action, delta_qty, reason or f"Stock adjusted by {delta_qty}")
     return updated
 
 
-def delete_item(item_id: str) -> bool:
-    """Deletes an item from inventory by ID."""
+def delete_item(item_id: str, reason: str = "") -> bool:
+    """Deletes an item from inventory by ID and logs transaction."""
     items = load_inventory()
     initial_len = len(items)
     items = [item for item in items if item["id"] != item_id]
     if len(items) < initial_len:
         save_inventory(items)
+        log_transaction(item_id, "DELETE", 0, reason or "Item removed from inventory")
         return True
     return False
 
 
-# Feature 1: Inventory & Expiry Alert Pipeline
+# ==============================================================================
+# FEATURE 1: BATCH CSV IMPORT & EXPORT PIPELINE
+# ==============================================================================
+
+def import_inventory_from_csv(csv_data: Union[str, bytes]) -> Dict[str, Any]:
+    """Imports medicine inventory from CSV content string or bytes.
+
+    Expected columns: name, category, expiry, qty, min_qty (optional), unit_price (optional)
+    """
+    if isinstance(csv_data, bytes):
+        csv_text = csv_data.decode("utf-8-sig", errors="ignore")
+    else:
+        csv_text = csv_data
+
+    reader = csv.DictReader(io.StringIO(csv_text))
+    items = load_inventory()
+    existing_names = {i["name"].lower(): i for i in items}
+    
+    imported_count = 0
+    updated_count = 0
+    errors = []
+
+    for row_idx, row in enumerate(reader, start=1):
+        try:
+            name = row.get("name", "").strip()
+            if not name:
+                errors.append(f"Row {row_idx}: Missing medicine name.")
+                continue
+
+            category = row.get("category", "General").strip() or "General"
+            expiry = row.get("expiry", "").strip()
+            # Validate date format YYYY-MM-DD
+            date.fromisoformat(expiry)
+            qty = int(row.get("qty", 0))
+            min_qty = int(row.get("min_qty", 30))
+            unit_price = float(row.get("unit_price", 5.0))
+
+            if name.lower() in existing_names:
+                existing_item = existing_names[name.lower()]
+                existing_item["qty"] += qty
+                existing_item["expiry"] = expiry
+                existing_item["min_qty"] = min_qty
+                existing_item["unit_price"] = unit_price
+                updated_count += 1
+            else:
+                new_id = f"MED-{len(items) + 1:03d}"
+                new_item = {
+                    "id": new_id,
+                    "name": name,
+                    "category": category,
+                    "expiry": expiry,
+                    "qty": qty,
+                    "min_qty": min_qty,
+                    "unit_price": unit_price,
+                }
+                items.append(new_item)
+                existing_names[name.lower()] = new_item
+                imported_count += 1
+
+        except Exception as e:
+            errors.append(f"Row {row_idx}: {str(e)}")
+
+    if imported_count > 0 or updated_count > 0:
+        save_inventory(items)
+        log_transaction(
+            "SYSTEM",
+            "CSV_IMPORT",
+            imported_count + updated_count,
+            f"CSV Import: {imported_count} new, {updated_count} updated",
+        )
+
+    return {
+        "imported_count": imported_count,
+        "updated_count": updated_count,
+        "errors": errors,
+        "total_processed": imported_count + updated_count,
+    }
+
+
+def export_inventory_to_csv(only_urgent: bool = False) -> str:
+    """Exports inventory as CSV string. If only_urgent=True, exports only items needing action."""
+    items = get_items()
+    if only_urgent:
+        items = [i for i in items if i["status"] in ["EXPIRED", "CRITICAL"] or i["is_low_stock"]]
+
+    output = io.StringIO()
+    fieldnames = ["id", "name", "category", "expiry", "qty", "min_qty", "unit_price", "days_left", "status", "is_low_stock"]
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for item in items:
+        writer.writerow(item)
+    return output.getvalue()
+
+
+# ==============================================================================
+# FEATURE 2: SMART RESTOCKING & PURCHASE ORDER PIPELINE
+# ==============================================================================
+
+def get_restock_recommendations(safety_multiplier: float = 1.5) -> Dict[str, Any]:
+    """Generates automated restocking and purchase order recommendations."""
+    items = get_items()
+    reorder_list = []
+    total_units_needed = 0
+    total_estimated_cost = 0.0
+
+    for item in items:
+        min_qty = item.get("min_qty", 30)
+        curr_qty = item["qty"]
+        target_qty = int(min_qty * safety_multiplier)
+        status = item["status"]
+
+        # If expired, current stock is unusable (treated as 0 available)
+        effective_stock = 0 if status == "EXPIRED" else curr_qty
+
+        if effective_stock < min_qty or status in ["EXPIRED", "CRITICAL"]:
+            needed = max(min_qty, target_qty - effective_stock)
+            unit_price = float(item.get("unit_price", 5.0))
+            cost = round(needed * unit_price, 2)
+
+            priority = "URGENT" if status == "EXPIRED" or effective_stock == 0 else "HIGH" if status == "CRITICAL" else "MEDIUM"
+
+            reorder_item = {
+                "id": item["id"],
+                "name": item["name"],
+                "category": item["category"],
+                "current_qty": curr_qty,
+                "effective_usable_qty": effective_stock,
+                "min_qty": min_qty,
+                "suggested_order_qty": needed,
+                "unit_price": unit_price,
+                "estimated_cost": cost,
+                "status": status,
+                "priority": priority,
+            }
+            reorder_list.append(reorder_item)
+            total_units_needed += needed
+            total_estimated_cost += cost
+
+    # Sort reorders by priority
+    priority_order = {"URGENT": 1, "HIGH": 2, "MEDIUM": 3}
+    reorder_list.sort(key=lambda x: priority_order.get(x["priority"], 4))
+
+    return {
+        "items_to_reorder": reorder_list,
+        "total_items_to_order": len(reorder_list),
+        "total_units_needed": total_units_needed,
+        "total_estimated_cost": round(total_estimated_cost, 2),
+    }
+
+
+# ==============================================================================
+# FEATURE 3: AUDIT TRAIL & TRANSACTION LOGGING PIPELINE
+# ==============================================================================
+
+def load_transactions() -> List[Dict[str, Any]]:
+    """Loads audit transaction logs from JSON."""
+    if not os.path.exists(TRANSACTIONS_FILE):
+        return []
+    try:
+        with open(TRANSACTIONS_FILE, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def log_transaction(item_id: str, action: str, qty_change: int, reason: str = "") -> Dict[str, Any]:
+    """Records an inventory activity event."""
+    transactions = load_transactions()
+    tx_entry = {
+        "tx_id": f"TX-{len(transactions) + 1:04d}",
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "item_id": item_id,
+        "action": action,
+        "qty_change": qty_change,
+        "reason": reason,
+    }
+    transactions.append(tx_entry)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(TRANSACTIONS_FILE, "w") as f:
+        json.dump(transactions, f, indent=2)
+    return tx_entry
+
+
+def get_transaction_history(limit: int = 50, item_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Returns recent transaction logs, newest first."""
+    transactions = load_transactions()
+    if item_id:
+        transactions = [t for t in transactions if t["item_id"] == item_id]
+    transactions.sort(key=lambda t: t["timestamp"], reverse=True)
+    return transactions[:limit]
+
+
+# ==============================================================================
+# FEATURE 4: ADVANCED MULTI-FILTER & SEARCH PIPELINE
+# ==============================================================================
+
+def search_items(
+    query: str = "",
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    is_low_stock: Optional[bool] = None,
+    sort_by: str = "urgency",
+) -> List[Dict[str, Any]]:
+    """Advanced search and multi-facet filtering pipeline for inventory items."""
+    items = get_items()
+    q = query.strip().lower()
+
+    filtered = []
+    for item in items:
+        # Text search across id, name, category
+        if q and not (q in item["id"].lower() or q in item["name"].lower() or q in item["category"].lower()):
+            continue
+        # Status filter
+        if status and item["status"] != status:
+            continue
+        # Category filter
+        if category and item["category"] != category:
+            continue
+        # Low stock filter
+        if is_low_stock is not None and item["is_low_stock"] != is_low_stock:
+            continue
+        filtered.append(item)
+
+    # Sorting options
+    if sort_by == "name":
+        filtered.sort(key=lambda x: x["name"].lower())
+    elif sort_by == "qty_asc":
+        filtered.sort(key=lambda x: x["qty"])
+    elif sort_by == "qty_desc":
+        filtered.sort(key=lambda x: x["qty"], reverse=True)
+    elif sort_by == "expiry":
+        filtered.sort(key=lambda x: x["expiry"])
+    else:  # default 'urgency'
+        filtered.sort(key=lambda x: (x["alert_level"], x["days_left"]))
+
+    return filtered
+
+
+# ==============================================================================
+# INVENTORY METRICS & AI CONTEXT PREPARATION
+# ==============================================================================
+
 def get_inventory_alerts() -> Dict[str, Any]:
     """Generates comprehensive inventory health and alert metrics."""
     items = get_items()
@@ -190,7 +456,6 @@ def get_inventory_alerts() -> Dict[str, Any]:
     }
 
 
-# Feature 2: Category & Risk Analytics Pipeline
 def get_inventory_analytics() -> Dict[str, Any]:
     """Computes distribution, risk indices, and category breakdowns."""
     items = get_items()
@@ -211,7 +476,6 @@ def get_inventory_analytics() -> Dict[str, Any]:
     total = len(items)
     risk_score = 0.0
     if total > 0:
-        # Risk score calculation (0 to 100) based on weighted non-good items
         weighted_risk = (
             (status_counts["EXPIRED"] * 1.0)
             + (status_counts["CRITICAL"] * 0.7)
@@ -226,15 +490,15 @@ def get_inventory_analytics() -> Dict[str, Any]:
     }
 
 
-# Feature 3: AI Context Preparation Pipeline
 def get_ai_inventory_context() -> str:
-    """Formats current inventory metrics and warnings into structured Markdown context
+    """Formats current inventory metrics, alerts, and restock needs into structured Markdown context
 
-    specifically designed to be passed to LLMs/AI features for person B's AI assistant.
+    specifically designed to be passed to LLMs/AI features for Person B's AI assistant.
     """
     items = get_items()
     alerts = get_inventory_alerts()
     analytics = get_inventory_analytics()
+    restock = get_restock_recommendations()
 
     lines = [
         "# DawaaWatch Current Inventory System Context",
@@ -249,6 +513,11 @@ def get_ai_inventory_context() -> str:
         f"- Warning Expiry (30-90 days): {alerts['warning_count']} item(s)",
         f"- Low Stock Medicines: {alerts['low_stock_count']} item(s)",
         "",
+        "## Recommended Reorder & Restock Needs:",
+        f"- Total Items Needing Restock: {restock['total_items_to_order']}",
+        f"- Estimated Purchase Cost: ${restock['total_estimated_cost']:.2f}",
+        f"- Total Units Needed: {restock['total_units_needed']} packs",
+        "",
         "## Detailed Inventory List:",
     ]
 
@@ -256,6 +525,7 @@ def get_ai_inventory_context() -> str:
         lines.append(
             f"- [{item['id']}] {item['name']} | Category: {item['category']} | "
             f"Qty: {item['qty']} (Min: {item.get('min_qty', 30)}) | "
+            f"Unit Price: ${item.get('unit_price', 5.0):.2f} | "
             f"Expiry: {item['expiry']} ({item['days_left']} days left) | Status: {item['status']}"
         )
 
