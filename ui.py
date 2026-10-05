@@ -3,7 +3,14 @@ import html
 import streamlit as st
 import streamlit.components.v1 as components
 
-from pipeline import get_inventory_alerts, get_items
+from pipeline import (
+    export_inventory_to_csv,
+    get_inventory_alerts,
+    get_restock_recommendations,
+    get_transaction_history,
+    get_items,
+    search_items,
+)
 
 
 def _inject_cursor_glow():
@@ -93,13 +100,28 @@ def _styles(theme):
       .medicine {{ font-weight: 600; }}
       .quantity {{ font-variant-numeric: tabular-nums; }}
       .days {{ display: inline-flex; border: 1px solid rgba(141,247,211,.23); border-radius: 999px; color: {colors['accent']}; font-size: .72rem; font-weight: 600; padding: .3rem .62rem; }}
-      @media (max-width: 680px) {{ .block-container {{ padding: 1.3rem 1.05rem 2rem; }} .hero h1 {{ font-size: 2.75rem; }} th, td {{ padding-left: .8rem; padding-right: .8rem; }} th:nth-child(2), td:nth-child(2) {{ display: none; }} }}
+      .filter-label {{ color: {colors['muted']}; font-size: .69rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; margin: 1.5rem 0 .55rem; }}
+      [data-testid="stTextInput"] input, [data-testid="stSelectbox"] div[data-baseweb="select"] > div {{ background: {colors['surface_solid']} !important; border-color: {colors['line']} !important; border-radius: 12px !important; color: {colors['text']} !important; }}
+      [data-testid="stTextInput"] label, [data-testid="stSelectbox"] label {{ color: {colors['muted']} !important; font-size: .72rem !important; font-weight: 600 !important; }}
+      .restock-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .85rem; }}
+      .restock-card {{ border: 1px solid {colors['line']}; border-radius: 16px; padding: 1.05rem; background: {colors['surface']}; }}
+      .restock-card h3 {{ color: {colors['text']}; font-size: .91rem; margin: .3rem 0 .35rem; }}
+      .restock-card p {{ color: {colors['muted']}; font-size: .75rem; margin: 0; line-height: 1.65; }}
+      .priority {{ color: {colors['accent']}; font-size: .65rem; font-weight: 700; letter-spacing: .1em; }}
+      .section-row {{ display: flex; align-items: center; justify-content: space-between; margin: 2.7rem 0 1rem; }}
+      .section-row .section-label {{ margin: 0; }}
+      [data-testid="stDownloadButton"] button {{ border: 1px solid {colors['line']}; border-radius: 999px; background: {colors['surface_solid']}; color: {colors['text']}; font-size: .75rem; padding: .48rem .85rem; }}
+      .audit {{ border-top: 1px solid {colors['line']}; }}
+      .audit-item {{ display: grid; grid-template-columns: 1fr auto; gap: 1rem; padding: .9rem 0; border-bottom: 1px solid {colors['line']}; }}
+      .audit-item strong {{ color: {colors['text']}; font-size: .8rem; }} .audit-item span {{ color: {colors['muted']}; font-size: .72rem; }}
+      .empty-state {{ color: {colors['muted']}; padding: 1.5rem; text-align: center; }}
+      @media (max-width: 680px) {{ .block-container {{ padding: 1.3rem 1.05rem 2rem; }} .hero h1 {{ font-size: 2.75rem; }} th, td {{ padding-left: .8rem; padding-right: .8rem; }} th:nth-child(2), td:nth-child(2) {{ display: none; }} .restock-grid {{ grid-template-columns: 1fr; }} }}
     </style>
     """
 
 
 def show_dashboard():
-    items = get_items()
+    all_items = get_items()
     alerts = get_inventory_alerts()
     _inject_cursor_glow()
     st.markdown(_styles(st.session_state.theme), unsafe_allow_html=True)
@@ -112,6 +134,21 @@ def show_dashboard():
         icon = "☀" if st.session_state.theme == "dark" else "☾"
         st.button(icon, key="theme_toggle", help="Switch colour theme", on_click=_toggle_theme)
         st.markdown('</div>', unsafe_allow_html=True)
+
+    categories = sorted({item.get("category", "General") for item in all_items})
+    filters = st.columns([2, 1, 1])
+    with filters[0]:
+        query = st.text_input("Search inventory", placeholder="Medicine, category, or ID")
+    with filters[1]:
+        status_choice = st.selectbox("Expiry status", ["All statuses", "EXPIRED", "CRITICAL", "WARNING", "GOOD"])
+    with filters[2]:
+        category_choice = st.selectbox("Category", ["All categories", *categories])
+
+    items = search_items(
+        query=query,
+        status=None if status_choice == "All statuses" else status_choice,
+        category=None if category_choice == "All categories" else category_choice,
+    )
 
     metrics = [
         ("Items tracked", alerts["total_items"], "Active catalogue"),
@@ -126,8 +163,34 @@ def show_dashboard():
         f"<tr><td class='medicine'>{html.escape(item['name'])}</td><td>{html.escape(item.get('category', 'General'))}</td><td>{html.escape(item['expiry'])}</td><td class='quantity'>{item['qty']}</td><td><span class='days'>{_expiry_label(item)}</span></td></tr>"
         for item in items
     )
-    st.markdown("<div class='section-label'>Inventory overview</div>", unsafe_allow_html=True)
+    if not rows:
+        rows = "<tr><td class='empty-state' colspan='5'>No medicine matches these filters.</td></tr>"
+    section, download = st.columns([5, 1])
+    with section:
+        st.markdown("<div class='section-label'>Inventory overview</div>", unsafe_allow_html=True)
+    with download:
+        st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
+        st.download_button("Export CSV", export_inventory_to_csv(), "expirex-inventory.csv", "text/csv")
     st.markdown(
         f"""<div class="inventory"><div class="inventory-head"><strong>Medicine inventory</strong><span>LIVE STOCK POSITION</span></div><table><thead><tr><th>Medicine</th><th>Category</th><th>Expiry date</th><th>In stock</th><th>Expiry window</th></tr></thead><tbody>{rows}</tbody></table></div>""",
         unsafe_allow_html=True,
     )
+
+    restock = get_restock_recommendations()
+    st.markdown("<div class='section-label'>Restock plan</div>", unsafe_allow_html=True)
+    if restock["items_to_reorder"]:
+        restock_cards = "".join(
+            f"<article class='restock-card'><div class='priority'>{html.escape(item['priority'])} PRIORITY</div><h3>{html.escape(item['name'])}</h3><p>Order <strong>{item['suggested_order_qty']} packs</strong> · Estimated cost ${item['estimated_cost']:.2f}</p></article>"
+            for item in restock["items_to_reorder"][:3]
+        )
+        st.markdown(f"<div class='restock-grid'>{restock_cards}</div>", unsafe_allow_html=True)
+    else:
+        st.markdown("<div class='empty-state'>No restocking action is currently required.</div>", unsafe_allow_html=True)
+
+    transactions = get_transaction_history(limit=3)
+    if transactions:
+        audit_rows = "".join(
+            f"<div class='audit-item'><div><strong>{html.escape(entry['action'].replace('_', ' ').title())}</strong> <span>· {html.escape(entry['reason'])}</span></div><span>{html.escape(entry['timestamp'])}</span></div>"
+            for entry in transactions
+        )
+        st.markdown("<div class='section-label'>Recent activity</div><div class='audit'>" + audit_rows + "</div>", unsafe_allow_html=True)
